@@ -109,8 +109,9 @@ class FillEvent:
 
     @property
     def total_cost(self):
-        """Total transaction cost including all components."""
-        return self.commission + self.sales_tax + self.slippage
+        """Explicit transaction costs (commission + tax). Slippage is already
+        embedded in fill_price via price impact, not double-counted here."""
+        return self.commission + self.sales_tax
 
     @property
     def net_value(self):

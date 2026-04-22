@@ -158,6 +158,7 @@ def download_all(symbols, start="2015-01-01", end="2024-12-31",
     print(f"\nDownloading {total} tickers (daily OHLCV)...")
     print(f"Est. time: ~{(total*delay + (total//batch_size)*batch_pause)//60+1} mins\n")
 
+    opens = {}
     for i, symbol in enumerate(symbols):
         print(f"[{i+1}/{total}] {symbol}...", end=" ", flush=True)
         df = download_single(symbol, start, end)
@@ -165,6 +166,7 @@ def download_all(symbols, start="2015-01-01", end="2024-12-31",
         if df is not None and not df.empty:
             closes[symbol]  = df['close']
             volumes[symbol] = df['volume']
+            opens[symbol]   = df['open']
             print(f"✓ {len(df)} days")
         else:
             failed.append(symbol)
@@ -181,8 +183,9 @@ def download_all(symbols, start="2015-01-01", end="2024-12-31",
 
     closes_df  = pd.DataFrame(closes)
     volumes_df = pd.DataFrame(volumes)
+    opens_df   = pd.DataFrame(opens)
 
-    return closes_df, volumes_df, failed
+    return closes_df, volumes_df, opens_df, failed
 
 
 def get_top_n_universe(closes, volumes, rebalance_date,
@@ -311,23 +314,36 @@ def generate_universe_update_events(schedule):
     return events
 
 
-def save_data(closes, volumes, path="data/processed"):
+def save_data(closes, volumes, opens=None, path="data/processed"):
     """Save price and volume data to CSV."""
     os.makedirs(path, exist_ok=True)
     closes.to_csv(f"{path}/closes_daily.csv")
     volumes.to_csv(f"{path}/volumes_daily.csv")
+    if opens is not None:
+        opens.to_csv(f"{path}/opens_daily.csv")
     print(f"\nSaved to {path}/")
     print(f"  closes : {closes.shape}")
     print(f"  volumes: {volumes.shape}")
+    if opens is not None:
+        print(f"  opens  : {opens.shape}")
 
 
 def load_data(path="data/processed"):
-    """Load saved price and volume data."""
+    """Load saved price and volume data.
+
+    Returns closes, volumes, opens. Opens is None if not yet downloaded
+    (re-run download_all to generate opens_daily.csv).
+    """
     closes  = pd.read_csv(f"{path}/closes_daily.csv",
                            index_col=0, parse_dates=True)
     volumes = pd.read_csv(f"{path}/volumes_daily.csv",
                            index_col=0, parse_dates=True)
-    return closes, volumes
+    opens_path = f"{path}/opens_daily.csv"
+    if os.path.exists(opens_path):
+        opens = pd.read_csv(opens_path, index_col=0, parse_dates=True)
+    else:
+        opens = None
+    return closes, volumes, opens
 
 
 if __name__ == "__main__":
@@ -337,19 +353,21 @@ if __name__ == "__main__":
     # Load existing data if available, otherwise download
     if os.path.exists("data/processed/closes_daily.csv"):
         print("Loading existing data...")
-        closes, volumes = load_data()
+        closes, volumes, opens = load_data()
         print(f"  Closes : {closes.shape}")
         print(f"  Volumes: {volumes.shape}")
+        if opens is not None:
+            print(f"  Opens  : {opens.shape}")
+        else:
+            print("  Opens  : not available (re-download to generate)")
     else:
         print("No existing data found — downloading...")
-        closes, volumes, failed = download_all(
+        closes, volumes, opens, failed = download_all(
             VN30_MASTER,
             start="2015-01-01",
             end  ="2024-12-31"
         )
-        save_data(closes, volumes)
-    # Save
-    save_data(closes, volumes)
+        save_data(closes, volumes, opens)
 
     # Test universe schedule — 6M rebalancing, top 5
     schedule_6m_5 = build_universe_schedule(

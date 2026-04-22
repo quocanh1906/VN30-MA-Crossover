@@ -96,7 +96,7 @@ class SimulatedExecutionHandler:
             print(f"  ⚠ {ticker}: quantity rounds to 0 lots — order skipped")
             return
 
-        # Apply slippage — buy at slightly higher, sell at slightly lower
+        # Apply slippage via price impact — buy higher, sell lower
         if direction == "BUY":
             fill_price = exec_price * (1 + SLIPPAGE_RATE)
         else:
@@ -107,7 +107,8 @@ class SimulatedExecutionHandler:
         commission  = trade_value * COMMISSION_RATE
         sales_tax   = trade_value * SALES_TAX_RATE \
                       if direction == "SELL" else 0.0
-        slippage    = trade_value * SLIPPAGE_RATE
+        # Slippage cost is already embedded in fill_price; track for reporting only
+        slippage    = abs(fill_price - exec_price) * quantity
 
         fill = FillEvent(
             timestamp  = exec_date,
@@ -142,7 +143,7 @@ if __name__ == "__main__":
     from events import OrderEvent
     import pandas as pd
 
-    closes, volumes = load_data()
+    closes, volumes, _ = load_data()
 
     # Quick test — simulate a BUY order for VCB
     q = Queue()

@@ -55,7 +55,7 @@ class Backtest:
     verbose         : print trade details if True
     """
 
-    def __init__(self, closes, volumes,
+    def __init__(self, closes, volumes, opens=None,
                  short_window=15, long_window=50,
                  top_n=5, rebalance_freq="6M",
                  initial_capital=1_000_000_000,
@@ -65,6 +65,10 @@ class Backtest:
 
         self.closes         = closes
         self.volumes        = volumes
+        self.opens          = opens if opens is not None else closes
+        if opens is None:
+            print("Warning: no open prices available — using closes as proxy. "
+                  "Re-download data to get actual open prices.")
         self.short_window   = short_window
         self.long_window    = long_window
         self.top_n          = top_n
@@ -113,8 +117,11 @@ class Backtest:
         self.execution  = SimulatedExecutionHandler(
             events = self.events,
             closes = closes,
-            opens  = closes,  # use close as open proxy
+            opens  = self.opens,
         )
+
+        # Fills dated T+1 are deferred here and released on that day
+        self.deferred_fills = {}
 
         # Get all trading days in backtest period
         all_dates = closes.index
@@ -123,7 +130,7 @@ class Backtest:
             (all_dates <= self.end_date)
         ]
 
-    def _process_pending_events(self):
+    def _process_pending_events(self, current_date):
         while True:
             try:
                 event = self.events.get(block=False)
@@ -145,7 +152,12 @@ class Backtest:
                 self.execution.execute_order(event)
 
             elif event.event_type == "FILL":
-                self.portfolio.on_fill(event)
+                exec_date = pd.Timestamp(event.timestamp)
+                if exec_date > current_date:
+                    # Defer fill to its actual execution day
+                    self.deferred_fills.setdefault(exec_date, []).append(event)
+                else:
+                    self.portfolio.on_fill(event)
 
     def run(self):
         """
@@ -170,11 +182,15 @@ class Backtest:
 
         for date in self.trading_days:
 
+            # ── Step 0: Release fills whose execution date is today ────
+            for fill in self.deferred_fills.pop(date, []):
+                self.portfolio.on_fill(fill)
+
             # ── Step 1: Universe rebalancing ──────────────────────────
             if date in self.universe_event_map:
                 universe_event = self.universe_event_map[date]
                 self.events.put(universe_event)
-                self._process_pending_events()
+                self._process_pending_events(date)
 
             # Skip if no universe yet
             if not self.strategy.universe:
@@ -193,12 +209,15 @@ class Backtest:
                 if pd.isna(close):
                     continue
 
+                open_price = (self.opens[ticker].get(date, close)
+                              if ticker in self.opens.columns else close)
+
                 market_event = MarketEvent(
                     timestamp = date,
                     symbol    = ticker,
-                    open      = close,   # proxy
-                    high      = close,   # proxy
-                    low       = close,   # proxy
+                    open      = open_price,
+                    high      = close,   # proxy (no high/low data)
+                    low       = close,   # proxy (no high/low data)
                     close     = close,
                     volume    = self.volumes[ticker].get(date, 0)
                                if ticker in self.volumes.columns else 0,
@@ -208,9 +227,8 @@ class Backtest:
             # ── Step 3: Process all events ─────────────────────────────
             # MarketEvents → Strategy → SignalEvents
             # SignalEvents → Portfolio → OrderEvents
-            # OrderEvents → Execution → FillEvents
-            # FillEvents  → Portfolio (updates holdings)
-            self._process_pending_events()
+            # OrderEvents → Execution → FillEvents (deferred to T+1)
+            self._process_pending_events(date)
 
             # ── Step 4: Update market values and snapshot ──────────────
             for ticker in self.strategy.universe:
@@ -240,13 +258,14 @@ if __name__ == "__main__":
 
     # Load data
     print("Loading data...")
-    closes, volumes = load_data()
+    closes, volumes, opens = load_data()
 
     # ── IS backtest (2015-2020) with best parameters ───────────────────
     print("\nRunning IS backtest (2015-2020)...")
     bt_is = Backtest(
         closes         = closes,
         volumes        = volumes,
+        opens          = opens,
         short_window   = 15,
         long_window    = 50,
         top_n          = 5,
@@ -263,6 +282,7 @@ if __name__ == "__main__":
     bt_oos = Backtest(
         closes         = closes,
         volumes        = volumes,
+        opens          = opens,
         short_window   = 15,
         long_window    = 50,
         top_n          = 5,

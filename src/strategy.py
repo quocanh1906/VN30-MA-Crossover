@@ -9,8 +9,9 @@ Key design decisions:
 - Signal only generated if stock is in current watchlist
 - Requires full long_window of history before any signal
 - Crossover detected by sign change in (short_ma - long_ma)
-- No signal generated on the day a stock enters the watchlist
-  (requires at least one full day of monitoring first)
+- Signal suppression on entry: prev_signal starts at 0; crossover check
+  requires prev != 0, so no signal fires until the MA relationship has
+  been observed on at least one prior bar
 - IS/OOS split supported via date parameter
 """
 
@@ -52,26 +53,22 @@ class MovingAverageCrossover:
         # Current universe — only generate signals for these stocks
         self.universe = []
 
-        # Track previous MA difference to detect crossovers
-        # +1 = short above long, -1 = short below long, 0 = not enough data
+        # Track previous MA relationship to detect crossovers.
+        # Starts at 0 per stock; crossover check requires prev != 0,
+        # so no signal fires until at least one prior bar is observed.
         self.prev_signal = {}
-
-        # Track which stocks just entered watchlist this period
-        # No signal on entry day — need at least one prior observation
-        self.new_entries = set()
 
     def update_universe(self, event: UniverseUpdateEvent):
         """
         Handle universe rebalancing.
         - Add new stocks to monitoring (with fresh buffer)
         - Remove exited stocks from monitoring
-        - Mark new entries so we don't signal on day 1
         """
-        # Add new stocks — fresh price buffer, no history carried over
+        # Add new stocks — fresh price buffer, prev_signal=0 prevents
+        # a signal firing until the MA relationship is observed first
         for ticker in event.stocks_added:
             self.price_buffer[ticker] = deque(maxlen=self.long_window + 1)
             self.prev_signal[ticker]  = 0
-            self.new_entries.add(ticker)
 
         # Remove exited stocks
         for ticker in event.stocks_removed:
@@ -79,7 +76,6 @@ class MovingAverageCrossover:
                 del self.price_buffer[ticker]
             if ticker in self.prev_signal:
                 del self.prev_signal[ticker]
-            self.new_entries.discard(ticker)
 
         self.universe = event.new_universe
         print(f"  Strategy universe updated: {self.universe}")
@@ -107,9 +103,6 @@ class MovingAverageCrossover:
         # Need full long_window of history before generating signal
         if len(self.price_buffer[ticker]) < self.long_window:
             return
-
-        # Remove from new entries after first full day of data
-        self.new_entries.discard(ticker)
 
         # Compute MAs
         prices      = list(self.price_buffer[ticker])
@@ -279,7 +272,7 @@ if __name__ == "__main__":
     sys.path.insert(0, ".")
     from data import load_data, build_universe_schedule
 
-    closes, volumes = load_data()
+    closes, volumes, _ = load_data()
 
     # Build universe schedule
     schedule = build_universe_schedule(
